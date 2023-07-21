@@ -62,7 +62,41 @@ The `config.json` file is vital for customizing the generation of your NFT art. 
   "basePath": "./images/",
   "outputPath": "./output/",
   "imageUrl": "rust-nft-art-generator.io",
-  "layerFolders": ["Folder1", "Folder2", "Folder3", "Folder4", "Folder5"]
+  "layerFolders": ["Folder1", "Folder2", "Folder3", "Folder4", "Folder5"],
+  "forcedCombinations": [
+    {
+      "combo": [
+        {
+          "layer": "LayerName",
+          "value": "Image"
+        },
+        {
+          "layer": {
+            "mainLayer": "LayerName",
+            "subLayer": "SubLayerName"
+          },
+          "value": "*"
+        }
+      ],
+      "percentage": 20
+    },
+    {
+      "combo": [
+        {
+          "layer": "LayerName",
+          "value": "Image"
+        },
+        {
+          "layer": {
+            "mainLayer": "LayerName",
+            "subLayer": "SubLayerName"
+          },
+          "value": "*"
+        }
+      ],
+      "percentage": 40
+    }
+  ]
 }
 ```
 
