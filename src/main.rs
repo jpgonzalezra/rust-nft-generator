@@ -25,6 +25,7 @@ lazy_static! {
     static ref RE_WEIGHT: Regex = Regex::new(r"#\d*").unwrap();
     static ref RE_FILENAME: Regex = Regex::new(r"^(.*?)(?:#(\d+))?\..*$").unwrap();
     static ref RE_PATH: Regex = Regex::new(r"#\d+|\.\w+$").unwrap();
+    static ref ALLOWED_EXTENSION: &'static str = "png";
 }
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
@@ -102,6 +103,8 @@ pub enum CustomError {
     GetEntriesByPath(String),
     InvalidTrait(String),
     InvalidTotalSupply(u64, u64),
+    TotalPercentageExceeded(String),
+    InvalidImageExtension(String),
 }
 
 impl fmt::Display for CustomError {
@@ -116,6 +119,12 @@ impl fmt::Display for CustomError {
                 "Invalid total supply. Expected: {}. Actual: {}.",
                 expected, actual
             ),
+            CustomError::TotalPercentageExceeded(ref msg) => {
+                write!(f, "{}", msg)
+            }
+            CustomError::InvalidImageExtension(ref msg) => {
+                write!(f, "{}", msg)
+            }
         }
     }
 }
@@ -157,6 +166,7 @@ fn get_entries_by_path_dir(path: String) -> Result<Vec<String>, CustomError> {
 fn compare_and_verify_traits<T: PartialEq + Ord + Clone>(
     mut traits_by_path: Vec<String>,
     mut traits_by_config: Vec<String>,
+    base_path: &str,
 ) -> Result<Vec<String>, CustomError> {
     if traits_by_path.len() != traits_by_config.len() {
         return Err(CustomError::InvalidTrait(format!(
@@ -186,7 +196,7 @@ fn compare_and_verify_traits<T: PartialEq + Ord + Clone>(
         let mut best_index = 0;
 
         for (index, first_item) in unordered_traits_by_config.iter().enumerate() {
-            let score = levenshtein(first_item, &item.trim_start_matches("./images/"));
+            let score = levenshtein(first_item, &item.trim_start_matches(base_path));
             if score < best_score {
                 best_score = score;
                 best_index = index;
@@ -252,7 +262,7 @@ fn generate_permutations(
     while permutations.len() < total_supply {
         let current_permutation: Vec<String> = layers
             .iter()
-            .enumerate() // Añadimos esto para tener el índice del layer
+            .enumerate()
             .zip(&layer_weights)
             .filter_map(|((_index, layer), &(ref weights, total_weight))| {
                 if layer.is_empty() {
@@ -279,26 +289,22 @@ fn generate_permutations(
 }
 
 fn get_image_paths_recursive(dir: &Path) -> Vec<String> {
-    let mut image_paths: Vec<String> = Vec::new();
-
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
+    WalkDir::new(dir)
+        .into_iter()
+        .filter_map(Result::ok) // Ignore errors (like permissions denied)
+        .filter(|entry| {
             let entry_path = entry.path();
-            if entry_path.is_dir() {
-                image_paths.extend(get_image_paths_recursive(&entry_path));
-            } else if let Some(extension) = entry_path.extension() {
-                if let Some(ext_str) = extension.to_str() {
-                    if is_image_extension(ext_str) {
-                        if let Some(path_str) = entry_path.to_str() {
-                            image_paths.push(path_str.to_string());
-                        }
+            if entry_path.is_file() {
+                if let Some(extension) = entry_path.extension() {
+                    if let Some(ext_str) = extension.to_str() {
+                        return ALLOWED_EXTENSION.eq_ignore_ascii_case(ext_str);
                     }
                 }
             }
-        }
-    }
-
-    image_paths
+            return false;
+        })
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .collect::<Vec<String>>()
 }
 
 fn get_layers_by_traits(traits: Vec<String>) -> Vec<Vec<String>> {
@@ -312,13 +318,7 @@ fn get_layers_by_traits(traits: Vec<String>) -> Vec<Vec<String>> {
     return layers;
 }
 
-fn is_image_extension(extension: &str) -> bool {
-    let image_extensions = ["jpg", "jpeg", "png", "gif"];
-
-    image_extensions.contains(&extension.to_lowercase().as_str())
-}
-
-fn generate_image(
+fn generate_image_and_metadata(
     metadata: Metadata,
     image_paths: Vec<String>,
     output_path: String,
@@ -363,7 +363,7 @@ fn generate_image(
     let height = config_image.height;
 
     let mut combined_image = ImageBuffer::new(width, height);
-
+    // kill me now
     let closure = move || {
         let mut attributes: Vec<Attribute> = Vec::new();
 
@@ -424,11 +424,7 @@ fn remove_ds_store_files_recursively(folder_path: String) -> std::io::Result<()>
     }
     Ok(())
 }
-/// Function that removes any file present in output_path
-/// # Arguments
-///
-/// * `output_path` - A string slice that holds the base path used to recurse the directories beneath
-///
+
 fn remove_pre_existing_output(output_path: String) -> std::io::Result<()> {
     for entry in WalkDir::new(&output_path) {
         let entry = entry.unwrap();
@@ -438,22 +434,32 @@ fn remove_pre_existing_output(output_path: String) -> std::io::Result<()> {
     }
     Ok(())
 }
-/// Function that includes a file based on ForcedCombinations settings
-fn should_include_file(forced_combinations: &[ForcedCombo], file_path: &str) -> bool {
-    let path_parts: Vec<&str> = file_path.split('/').collect();
 
-    let (parent, grandparent) = if path_parts.len() > 3 {
-        (
-            path_parts[path_parts.len() - 2],
-            path_parts[path_parts.len() - 3],
-        )
-    } else {
-        (path_parts[path_parts.len() - 2], "images")
-    };
+fn should_include_file(
+    forced_combinations: &[ForcedCombo],
+    file_path: &str,
+    base_path: &str,
+) -> bool {
+    let path = Path::new(file_path);
+
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|f| f.to_str())
+        .unwrap_or(base_path);
+
+    let grandparent = path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|f| f.to_str())
+        .unwrap_or(base_path);
+
+    let path_parts: Vec<&str> = file_path.split('/').collect();
 
     let file_name = path_parts.last().unwrap().split('#').next().unwrap();
 
-    let target_layer_to_find = if grandparent.eq("images") {
+    let target_layer_to_find = if grandparent.eq(base_path) {
         parent
     } else {
         grandparent
@@ -487,20 +493,6 @@ fn should_include_file(forced_combinations: &[ForcedCombo], file_path: &str) -> 
     }
 }
 
-fn validate_percentage_sum(
-    forced_combinations: &Vec<ForcedCombinations>,
-) -> Result<(), &'static str> {
-    let total_percentage: u32 = forced_combinations
-        .iter()
-        .map(|combo| u32::from(combo.percentage))
-        .sum();
-
-    if total_percentage > 100 {
-        Err("The sum of the percentages in the forced combinations exceeds 100%.")
-    } else {
-        Ok(())
-    }
-}
 fn main() -> Result<(), Box<dyn Error>> {
     let input_path = std::env::args()
         .nth(2)
@@ -520,38 +512,45 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(|layer_folder| format!("{}{}", base_path.clone(), layer_folder))
         .collect();
 
-    let ordered_traits = compare_and_verify_traits::<String>(traits, traits_by_config)?;
+    let ordered_traits = compare_and_verify_traits::<String>(traits, traits_by_config, &base_path)?;
 
     let all_layers = get_layers_by_traits(ordered_traits);
     let mut permutations: HashMap<u64, Vec<String>> = HashMap::new();
-    let mut new_all_layers = all_layers.clone();
+    let mut remaining_layers_for_next_combinations = all_layers.clone();
     let mut possible_permutations: usize = 0;
-    let mut no_of_layers: usize = 0;
+    let mut layer_count: usize = 0;
     let mut rest_of_items_percentage = config.total_supply;
 
-    // Luego, puedes llamar a la función validate_percentage_sum:
-    match validate_percentage_sum(&config.forced_combinations) {
-        Ok(()) => println!("Percentages are OK."),
-        Err(err) => println!("Error: {}", err),
-    }
-
-    // Check if there are forced combinations
     if !config.forced_combinations.is_empty() {
+        let total_percentage: u32 = config
+            .forced_combinations
+            .iter()
+            .map(|combo| u32::from(combo.percentage))
+            .sum();
+
+        if total_percentage > 100 {
+            CustomError::TotalPercentageExceeded(
+                "The sum of the percentages in the forced combinations exceeds 100%.".to_string(),
+            );
+        }
+
         let mut not_included_layers: Vec<Vec<String>> = Vec::new();
 
-        // Process each forced combination
         for forced_combination_item in &config.forced_combinations {
             let current_forced_combination_config = &forced_combination_item.combo;
             let current_forced_combination_percentage = forced_combination_item.percentage;
-            let mut forced_layers_set: Vec<Vec<String>> = Vec::new();
+            let mut included_layers: Vec<Vec<String>> = Vec::new();
 
-            // Divide layers into included and not included for each forced combination
             for layer_data in &all_layers {
                 let mut included = Vec::new();
                 let mut not_included = Vec::new();
 
                 for file_path in layer_data {
-                    if should_include_file(current_forced_combination_config, file_path) {
+                    if should_include_file(
+                        current_forced_combination_config,
+                        file_path,
+                        base_path.as_str(),
+                    ) {
                         included.push(file_path.clone());
                     } else {
                         not_included.push(file_path.clone());
@@ -559,51 +558,49 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
 
                 not_included_layers.push(not_included);
-                forced_layers_set.push(included);
+                included_layers.push(included);
             }
 
-            // Replace the layers with the not included ones for the next forced combinations
-            for (new_all_layers_el, not_included_layers_el) in
-                new_all_layers.iter_mut().zip(&not_included_layers)
+            for (remaining_layers_for_next_combinations_el, not_included_layers_el) in
+                remaining_layers_for_next_combinations
+                    .iter_mut()
+                    .zip(&not_included_layers)
             {
                 if !not_included_layers_el.is_empty() {
-                    new_all_layers_el.clear();
-                    new_all_layers_el.extend(not_included_layers_el.iter().cloned());
+                    remaining_layers_for_next_combinations_el.clear();
+                    remaining_layers_for_next_combinations_el
+                        .extend(not_included_layers_el.iter().cloned());
                 }
             }
 
-            // Calculate items percentage for the current forced combination
             let total_items_percentage =
                 (config.total_supply * u32::from(current_forced_combination_percentage)) / 100;
             rest_of_items_percentage =
                 rest_of_items_percentage.saturating_sub(total_items_percentage);
 
-            // Generate and count permutations for the current forced combination
             permutations.extend(generate_permutations(
-                &forced_layers_set,
+                &included_layers,
                 total_items_percentage as usize,
             ));
             possible_permutations +=
-                get_permutations(&forced_layers_set, config.skipped_traits.clone());
+                get_permutations(&included_layers, config.skipped_traits.clone());
 
-            no_of_layers = new_all_layers.len();
+            layer_count = remaining_layers_for_next_combinations.len();
         }
 
-        // Extend permutations with the rest of the layers
         permutations.extend(generate_permutations(
-            &new_all_layers,
+            &remaining_layers_for_next_combinations,
             rest_of_items_percentage as usize,
         ));
     } else {
-        // No forced combinations, just generate and count all permutations
         permutations = generate_permutations(&all_layers, config.total_supply as usize);
         possible_permutations = get_permutations(&all_layers, config.skipped_traits.clone());
-        no_of_layers = all_layers.len();
+        layer_count = all_layers.len();
     }
 
     println!(
         "The number of possible permutations for {} layers is: {}.",
-        no_of_layers, possible_permutations
+        layer_count, possible_permutations
     );
 
     if possible_permutations < config.total_supply as usize {
@@ -616,7 +613,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     _ = remove_pre_existing_output(config.output_path.clone());
 
     for (index, image_paths) in permutations.into_iter().enumerate() {
-        let handle = std::thread::spawn(generate_image(
+        let handle = std::thread::spawn(generate_image_and_metadata(
             config.metadata.clone(),
             image_paths.1,
             config.output_path.clone(),
@@ -648,6 +645,8 @@ mod tests {
 
     #[test]
     fn test_should_include_file() {
+        let base_path = "images";
+
         let forced_combinations = vec![
             ForcedCombo {
                 layer: Layer::Simple("Face".to_string()),
@@ -662,17 +661,29 @@ mod tests {
             },
         ];
 
-        // Test case where file should be included
         let file_path1 = "./images/Face/BasilSynth_V1#25.png";
-        assert!(should_include_file(&forced_combinations, file_path1));
 
-        // Test case where file should be included due to wildcard
+        assert!(should_include_file(
+            &forced_combinations,
+            file_path1,
+            base_path
+        ));
+
         let file_path3 = "./images/Hair/Black#700/Style2#25.png";
-        assert!(should_include_file(&forced_combinations, file_path3));
 
-        // Test case where file should not be included
+        assert!(should_include_file(
+            &forced_combinations,
+            file_path3,
+            base_path
+        ));
+
         let file_path2 = "./images/Hair/Red#500/Style1#25.png";
-        assert!(!should_include_file(&forced_combinations, file_path2));
+
+        assert!(!should_include_file(
+            &forced_combinations,
+            file_path2,
+            base_path
+        ));
     }
 
     #[test]
@@ -722,6 +733,7 @@ mod tests {
 
     #[test]
     fn test_compare_and_verify_traits() {
+        let base_path = "./images";
         let vec1 = vec![
             "back_acc".to_string(),
             "background".to_string(),
@@ -751,13 +763,17 @@ mod tests {
         ];
 
         assert_eq!(
-            compare_and_verify_traits::<String>(vec1.clone(), vec2.clone()).unwrap(),
+            compare_and_verify_traits::<String>(vec1.clone(), vec2.clone(), &base_path).unwrap(),
             vec2
         );
 
-        assert!(compare_and_verify_traits::<String>(vec1.clone(), vec3.clone()).is_err());
+        assert!(
+            compare_and_verify_traits::<String>(vec1.clone(), vec3.clone(), &base_path).is_err()
+        );
 
-        assert!(compare_and_verify_traits::<String>(vec1.clone(), vec4.clone()).is_err());
+        assert!(
+            compare_and_verify_traits::<String>(vec1.clone(), vec4.clone(), &base_path).is_err()
+        );
     }
 
     #[test]
@@ -814,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_image() {
+    fn test_generate_image_and_metadata() {
         let temp_files = [
             Builder::new().suffix(".png").tempfile().unwrap(),
             Builder::new().suffix(".png").tempfile().unwrap(),
@@ -857,7 +873,7 @@ mod tests {
         let dir = tempdir().expect("Error to create the temp dir");
         let temp_path_str = dir.path().to_str().unwrap().to_owned();
 
-        let mut closure = generate_image(
+        let mut closure = generate_image_and_metadata(
             metadata.clone(),
             temp_file_paths.clone(),
             temp_path_str.clone(),
@@ -869,7 +885,7 @@ mod tests {
         let file_path = format!("{}/1.png", temp_path_str.clone());
         assert!(Path::new(&file_path).exists());
 
-        let mut closure2 = generate_image(
+        let mut closure2 = generate_image_and_metadata(
             metadata.clone(),
             temp_file_paths.clone(),
             temp_path_str.clone(),
@@ -922,5 +938,35 @@ mod tests {
         let chosen_image = choose_image_with_precomputed_weights(&layer, &weights, total_weight);
 
         assert!(layer.contains(chosen_image));
+    }
+
+    #[test]
+    fn test_get_image_paths_recursive() {
+        // Create a temporary directory.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        // Create subdirectories.
+        let subdir1 = dir_path.join("subdir1");
+        let subdir2 = dir_path.join("subdir2");
+        std::fs::create_dir(&subdir1).unwrap();
+        std::fs::create_dir(&subdir2).unwrap();
+
+        // Create files.
+        let file1 = dir_path.join("file1.png");
+        let file2 = subdir1.join("file2.jpg");
+        let file3 = subdir2.join("file3.jpeg");
+        let file4 = subdir2.join("file4.txt"); // Non-image file.
+        File::create(&file1).unwrap();
+        File::create(&file2).unwrap();
+        File::create(&file3).unwrap();
+        File::create(&file4).unwrap();
+
+        let image_paths = get_image_paths_recursive(dir_path);
+
+        assert!(image_paths.contains(&file1.to_string_lossy().into_owned()));
+        assert!(!image_paths.contains(&file2.to_string_lossy().into_owned()));
+        assert!(!image_paths.contains(&file3.to_string_lossy().into_owned()));
+        assert!(!image_paths.contains(&file4.to_string_lossy().into_owned()));
     }
 }
