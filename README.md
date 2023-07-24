@@ -44,6 +44,8 @@ YOUR_PROJECT/
 
 2. Define your `config.json` file as described below.
 
+3. We only allow to generate collections based on PNG files, any other extension is not supported.
+
 ## Config File
 
 The `config.json` file is vital for customizing the generation of your NFT art. Here's the file format:
