@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::to_string_pretty;
+use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -26,13 +27,6 @@ lazy_static! {
     static ref RE_FILENAME: Regex = Regex::new(r"^(.*?)(?:#(\d+))?\..*$").unwrap();
     static ref RE_PATH: Regex = Regex::new(r"#\d+|\.\w+$").unwrap();
     static ref ALLOWED_EXTENSION: &'static str = "png";
-}
-
-#[derive(Debug, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "camelCase")]
-struct Metadata {
-    name: String,
-    description: String,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
@@ -70,10 +64,10 @@ struct ForcedCombinations {
     percentage: u8,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Config {
-    metadata: Metadata,
+    metadata: HashMap<String, Value>,
     image: Image,
     total_supply: u32,
     base_path: String,
@@ -88,14 +82,7 @@ struct Attribute {
     trait_type: String,
     value: String,
     weight: f64,
-}
 
-#[derive(Serialize)]
-struct Traits {
-    name: String,
-    description: String,
-    image: String,
-    attributes: Vec<Attribute>,
 }
 
 #[derive(Debug)]
@@ -319,7 +306,7 @@ fn get_layers_by_traits(traits: Vec<String>) -> Vec<Vec<String>> {
 }
 
 fn generate_image_and_metadata(
-    metadata: Metadata,
+    metadata: HashMap<String, Value>,
     image_paths: Vec<String>,
     output_path: String,
     config_image: Image,
@@ -365,10 +352,15 @@ fn generate_image_and_metadata(
     let mut combined_image = ImageBuffer::new(width, height);
     // kill me now
     let closure = move || {
-        let mut attributes: Vec<Attribute> = Vec::new();
+        let mut attributes: Vec<Value> = Vec::new();
 
         for (image, attribute) in &images {
-            attributes.push(attribute.clone());
+            let mut attribute_map = serde_json::Map::new();
+            let attr = attribute.clone();
+            attribute_map.insert("trait_type".to_string(), Value::from(attr.trait_type));
+            attribute_map.insert("value".to_string(), Value::from(attr.value));
+            attributes.push(Value::Object(attribute_map));
+
             image::imageops::overlay(&mut combined_image, image, 0, 0);
         }
 
@@ -376,14 +368,10 @@ fn generate_image_and_metadata(
             .save(format!("./{}/{}.png", output_path, image_name))
             .unwrap();
 
-        let traits = Traits {
-            attributes,
-            name: metadata.clone().name,
-            description: metadata.clone().description,
-            image: "".to_string(),
-        };
+        let mut combined_metadata = metadata.clone();
+        combined_metadata.insert("attributes".to_string(), Value::Array(attributes));
 
-        let serialized = to_string_pretty(&traits).unwrap();
+        let serialized = to_string_pretty(&combined_metadata).unwrap();
 
         let mut file = File::create(format!("./{}/{}.json", output_path, image_name)).unwrap();
         file.write_all(serialized.as_bytes()).unwrap();
@@ -698,8 +686,7 @@ mod tests {
 
         let result = get_entries_by_path_dir(dir.path().to_str().unwrap().to_string());
         assert!(result.is_ok());
-        let mut traits = result.unwrap();
-        traits.reverse();
+        let  traits = result.unwrap();
         assert_eq!(traits.len(), 2);
         assert!(traits[0].contains(&"trait1".to_string()));
         assert!(traits[1].contains(&"trait2".to_string()));
@@ -716,8 +703,7 @@ mod tests {
             "trait1"
         ));
         assert!(result.is_ok());
-        let mut layers = result.unwrap();
-        layers.reverse();
+        let layers = result.unwrap();
         assert_eq!(traits.len(), 2);
         assert!(layers[0].contains(&"layer1.png".to_string()));
         assert!(layers[1].contains(&"layer2.png".to_string()));
@@ -863,10 +849,12 @@ mod tests {
             height: 600,
         };
 
-        let metadata = Metadata {
-            name: "test dummy data".to_string(),
-            description: "test dummy data descriptionn".to_string(),
-        };
+        let mut metadata: HashMap<String, Value> = HashMap::new();
+        metadata.insert("name".to_string(), Value::from("test dummy data".to_string()));
+        metadata.insert(
+            "description".to_string(),
+            Value::from("test dummy data description".to_string()),
+        );
 
         let image_name = 1;
 
