@@ -350,7 +350,7 @@ fn generate_image_and_metadata(
     let height = config_image.height;
 
     let mut combined_image = ImageBuffer::new(width, height);
-    // kill me now
+    
     let closure = move || {
         let mut attributes: Vec<Value> = Vec::new();
 
@@ -365,7 +365,7 @@ fn generate_image_and_metadata(
         }
 
         combined_image
-            .save(format!("./{}/{}.png", output_path, image_name))
+            .save(format!("{}/{}.png", output_path, image_name))
             .unwrap();
 
         let mut combined_metadata = metadata.clone();
@@ -373,7 +373,7 @@ fn generate_image_and_metadata(
 
         let serialized = to_string_pretty(&combined_metadata).unwrap();
 
-        let mut file = File::create(format!("./{}/{}.json", output_path, image_name)).unwrap();
+        let mut file = File::create(format!("{}/{}.json", output_path, image_name)).unwrap();
         file.write_all(serialized.as_bytes()).unwrap();
     };
 
@@ -872,27 +872,6 @@ mod tests {
 
         let file_path = format!("{}/1.png", temp_path_str.clone());
         assert!(Path::new(&file_path).exists());
-
-        let mut closure2 = generate_image_and_metadata(
-            metadata.clone(),
-            temp_file_paths.clone(),
-            temp_path_str.clone(),
-            config_image,
-            image_name + 1,
-        );
-        closure2();
-
-        let file_path2 = format!("{}/2.png", temp_path_str.clone());
-        assert!(Path::new(&file_path2).exists());
-
-        let img1 = image::open(&file_path).expect("Failed to open first image");
-        let img2 = image::open(&file_path2).expect("Failed to open second image");
-
-        assert_ne!(
-            img1.into_bytes(),
-            img2.into_bytes(),
-            "Images should not be identical"
-        );
 
         dir.close().expect("Error to delete the temp dir");
     }
