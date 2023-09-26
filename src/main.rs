@@ -82,7 +82,6 @@ struct Attribute {
     trait_type: String,
     value: String,
     weight: f64,
-
 }
 
 #[derive(Debug)]
@@ -350,7 +349,7 @@ fn generate_image_and_metadata(
     let height = config_image.height;
 
     let mut combined_image = ImageBuffer::new(width, height);
-    
+
     let closure = move || {
         let mut attributes: Vec<Value> = Vec::new();
 
@@ -686,7 +685,7 @@ mod tests {
 
         let result = get_entries_by_path_dir(dir.path().to_str().unwrap().to_string());
         assert!(result.is_ok());
-        let  traits = result.unwrap();
+        let traits = result.unwrap();
         assert_eq!(traits.len(), 2);
         assert!(traits[0].contains(&"trait1".to_string()));
         assert!(traits[1].contains(&"trait2".to_string()));
@@ -850,7 +849,10 @@ mod tests {
         };
 
         let mut metadata: HashMap<String, Value> = HashMap::new();
-        metadata.insert("name".to_string(), Value::from("test dummy data".to_string()));
+        metadata.insert(
+            "name".to_string(),
+            Value::from("test dummy data".to_string()),
+        );
         metadata.insert(
             "description".to_string(),
             Value::from("test dummy data description".to_string()),
@@ -872,6 +874,28 @@ mod tests {
 
         let file_path = format!("{}/1.png", temp_path_str.clone());
         assert!(Path::new(&file_path).exists());
+
+        let json_file_path = format!("{}/1.json", temp_path_str.clone());
+        assert!(
+            Path::new(&json_file_path).exists(),
+            "JSON file should exist"
+        );
+
+        let json_contents =
+            std::fs::read_to_string(&json_file_path).expect("Should be able to read the JSON file");
+        let parsed_json: serde_json::Value =
+            serde_json::from_str(&json_contents).expect("Should be valid JSON");
+
+        assert_eq!(
+            parsed_json.get("name").unwrap(),
+            "test dummy data",
+            "Name should be equal"
+        );
+        assert_eq!(
+            parsed_json.get("description").unwrap(),
+            "test dummy data description",
+            "Description should be equal"
+        );
 
         dir.close().expect("Error to delete the temp dir");
     }
